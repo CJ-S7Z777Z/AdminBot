@@ -984,8 +984,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 def main():
 
-    bot_configs = {
-        'Captain': {
+    sending_bots_configs = [
+        {
             'BOT_TOKEN': os.getenv('CAPTAIN_BOT_TOKEN'),
             'REDIS_HOST': os.getenv('CAPTAIN_REDIS_HOST'),
             'REDIS_PORT': os.getenv('CAPTAIN_REDIS_PORT'),
@@ -994,8 +994,9 @@ def main():
             'REDIS_DB': os.getenv('CAPTAIN_REDIS_DB'),
             'CHAT_ID_COLUMN': os.getenv('CAPTAIN_CHAT_ID_COLUMN'),
             'DB_PATH': os.getenv('CAPTAIN_DB_PATH'),
+            'name': 'Captain'
         },
-        'West': {
+        {
             'BOT_TOKEN': os.getenv('WEST_BOT_TOKEN'),
             'REDIS_HOST': os.getenv('WEST_REDIS_HOST'),
             'REDIS_PORT': os.getenv('WEST_REDIS_PORT'),
@@ -1004,15 +1005,18 @@ def main():
             'REDIS_DB': os.getenv('WEST_REDIS_DB'),
             'CHAT_ID_COLUMN': os.getenv('WEST_CHAT_ID_COLUMN'),
             'DB_PATH': os.getenv('WEST_DB_PATH'),
+            'name': 'West'
         }
-    }
+    ]
 
-    sending_bots = {}
-    for bot_name, config in bot_configs.items():
-        if not all(config.values()):  # Check if all config values are present
-            logger.warning(f"Недостаточно конфигурации для бота {bot_name}. Пропуск.")
+    sending_bots = []
+    for config in sending_bots_configs:
+        if not all([config.get('BOT_TOKEN'), config.get('REDIS_HOST'), config.get('REDIS_PORT'),
+                    config.get('REDIS_USERNAME'), config.get('REDIS_PASSWORD'),
+                    config.get('REDIS_DB'), config.get('CHAT_ID_COLUMN'), config.get('DB_PATH')]):
+            logger.warning(f"Недостаточно конфигурации для бота {config.get('name', 'Unknown')}. Пропуск.")
             continue
-        sending_bots[bot_name] = SendingBotManager(bot_name, config)
+        sending_bots.append(SendingBotManager(config['name'], config))
 
     if not sending_bots:
         logger.error("Нет настроенных отправляющих ботов. Завершаем работу.")
