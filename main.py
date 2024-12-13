@@ -625,58 +625,68 @@ async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE,
             suffix = '.mp4'
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
                 await file.download_to_drive(temp_file.name)
-                original_video_path = temp_file.name
+                temp_file_path = temp_file.name
 
-            video_clip = VideoFileClip(original_video_path)
-            width, height = video_clip.size
-            video_duration = video_clip.duration
-
-            # Ограничения Telegram для video_note (строгие)
-            MAX_SIZE = 50 * 1024 * 1024  # 50 MB
-            MAX_DURATION = 60  # 60 seconds
-            MAX_DIMENSION = 640  # Maximum dimension 640x640
-
-            # Вычисление нового размера, сохраняя соотношение сторон
-            target_size = min(width, height)
-            if target_size > MAX_DIMENSION:
-                target_size = MAX_DIMENSION
-            new_width = int(width * (target_size / height))
-            new_height = target_size
-
-            # Обрезка и сжатие видео
-            processed_video_path = original_video_path.replace('.mp4', '_processed.mp4')
-            try:
-                video_clip.resize((new_width, new_height)).set_duration(min(video_duration, MAX_DURATION)).write_videofile(processed_video_path, codec='libx264', audio_codec='aac', fps=24)
-                os.remove(original_video_path)  # Удаляем исходный файл
-            except Exception as e:
-                logging.error(f"Ошибка при обработке видео: {e}")
-                await update.message.reply_text("Не удалось обработать видео.  Убедитесь, что ffmpeg установлен и настроен корректно.")
-                return SEND_VIDEO_NOTE
-
-            # Проверка размера после обработки
-            if os.path.getsize(processed_video_path) > MAX_SIZE:
-                await update.message.reply_text("Видео слишком большое даже после обработки (максимум 50 МБ).")
-                os.remove(processed_video_path)
-                return SEND_VIDEO_NOTE
-
-            context.user_data['video_path'] = processed_video_path
-            # Сообщение о начале обработки возвращено!
-            await update.message.reply_text("Видео обрабатывается...")
+            #Check if it's a video note before processing
+            if video.duration and video.width and video.height: #Check if it is a video note
+                is_video_note = abs(video.width - video.height) <= 10 and video.duration <= 60
+            else:
+                is_video_note = False
 
 
+
+            if is_video_note: #Process only if it's intended as a video_note
+
+                video_clip = VideoFileClip(temp_file_path)
+                video_size = os.path.getsize(temp_file_path)
+                video_duration = video_clip.duration
+                width, height = video_clip.size
+
+                # Telegram's video_note requirements:
+                MAX_SIZE = 50 * 1024 * 1024  # 50 MB
+                MAX_DURATION = 60  # 60 seconds
+                MAX_DIMENSION = 640 #Maximum dimension 640x640
+
+                if video_size > MAX_SIZE:
+                    await update.message.reply_text("Видео слишком большое для видео-сообщения (максимум 50МБ).")
+                    os.remove(temp_file_path)
+                    return SEND_VIDEO_NOTE
+
+                if video_duration > MAX_DURATION:
+                    await update.message.reply_text("Видео слишком длинное для видео-сообщения (максимум 60 секунд).")
+                    os.remove(temp_file_path)
+                    return SEND_VIDEO_NOTE
+
+                # Check aspect ratio (1:1) and resize if needed
+                if abs(width - height) > 10:
+                    new_size = min(width, height)
+                    cropped_video = video_clip.crop(x_center=width/2, y_center=height/2, width=new_size, height=new_size)
+                    resized_video = cropped_video.resize((MAX_DIMENSION, MAX_DIMENSION)) #Resize to max dimension for video notes
+
+                    processed_temp_path = temp_file_path.replace('.mp4', '_processed.mp4')
+                    resized_video.write_videofile(processed_temp_path, codec='libx264', audio_codec='aac', fps=24) #Use libx264 for better compatibility
+
+                    os.remove(temp_file_path)
+                    temp_file_path = processed_temp_path
+
+                    #Recheck size after processing
+                    video_size = os.path.getsize(temp_file_path)
+                    if video_size > MAX_SIZE:
+                        await update.message.reply_text("Видео после обработки превышает ограничение в 50МБ.")
+                        os.remove(temp_file_path)
+                        return SEND_VIDEO_NOTE
+
+            context.user_data['video_path'] = temp_file_path
             await update.message.reply_text(
-                "Выберите бота, через которого отправить видео-сообщение:",
+                "Выберите бота, через которого отправить видео:",  #Changed message
                 reply_markup=select_bot_menu(sending_bots)
             )
             return SELECT_BOT_VIDEO_AUDIO
-
         except Exception as e:
             logging.error(f"Ошибка при обработке видео: {e}")
-            await update.message.reply_text("Не удалось обработать видео. Проверьте, установлен ли ffmpeg.")
-            if os.path.exists(original_video_path):
-                os.remove(original_video_path)
+            await update.message.reply_text("Не удалось обработать видео. Проверьте, установлен ли ffmpeg и есть ли права на запись.")
+            os.remove(temp_file_path) #remove temp file in case of error.
             return SEND_VIDEO_NOTE
-
     else:
         await update.message.reply_text("Пожалуйста, отправьте видео или видеофайл.")
         return SEND_VIDEO_NOTE
