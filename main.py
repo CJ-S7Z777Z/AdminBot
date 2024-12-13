@@ -613,6 +613,7 @@ async def done_send_post_media(update: Update, context: ContextTypes.DEFAULT_TYP
 
 @allowed_users_only
 async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE, sending_bots):
+    """Обрабатывает входящее видео и готовит его к отправке как видео-сообщение."""
     video = None
     if update.message.video:
         video = update.message.video
@@ -637,31 +638,23 @@ async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE,
             video_duration = video_clip.duration
             width, height = video_clip.size
 
-            # Требования Telegram для video_note:
-            # Максимальный размер: 50 МБ
-            # Максимальная длина: 60 секунд
-            # Соотношение сторон: 1:1 (квадратное видео)
-
+            compressed_video_path = None
             if video_size > 50 * 1024 * 1024 or video_duration > 60:
                 # Сжатие видео
                 logging.info(f"Видео слишком большое или длинное. Начинаем сжатие. Размер: {video_size} байт, Длительность: {video_duration} сек.")
                 compressed_video_path = original_video_path.replace('.mp4', '_compressed.mp4')
                 try:
-                    video_clip.resize(height=min(width, height)).set_duration(min(video_duration, 60)).write_videofile(compressed_video_path, codec='libx264', audio_codec='aac', fps=24) # fps = frames per second
-                    os.remove(original_video_path)
-                    video_clip = VideoFileClip(compressed_video_path)
-                    video_size = os.path.getsize(compressed_video_path)
-                    video_duration = video_clip.duration
-                    width, height = video_clip.size
-                    logging.info(f"Видео успешно сжато. Новый размер: {video_size} байт, Новая длительность: {video_duration} сек.")
+                    # Уменьшаем размер и длительность, сохраняя соотношение сторон
+                    new_height = min(width, height)
+                    new_width = int(width * (new_height / height)) #сохраняем пропорции
+                    video_clip.resize((new_width,new_height)).set_duration(min(video_duration, 60)).write_videofile(compressed_video_path, codec='libx264', audio_codec='aac', fps=24)
+                    logging.info(f"Видео успешно сжато. Новый размер: {os.path.getsize(compressed_video_path)} байт, Новая длительность: {VideoFileClip(compressed_video_path).duration} сек.")
 
                 except Exception as e:
                     logging.error(f"Ошибка при сжатии видео: {e}")
-                    await update.message.reply_text("Не удалось сжать видео.")
+                    await update.message.reply_text("Не удалось сжать видео.  Проверьте, установлен ли ffmpeg.")
                     os.remove(original_video_path)
                     return SEND_VIDEO_NOTE
-
-
             # Проверка соотношения сторон (1:1)
             if abs(width - height) > 10:  # Допустимая погрешность
                 await update.message.reply_text("Видео не соответствует формату 1:1 (квадратное видео).")
@@ -671,34 +664,34 @@ async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 cropped_video = video_clip.crop(x_center=width/2, y_center=height/2, width=new_size, height=new_size)
                 cropped_video_path = original_video_path.replace('.mp4', '_cropped.mp4')
                 cropped_video.write_videofile(cropped_video_path, codec='libx264', audio_codec='aac', fps=24)
-                if os.path.exists(original_video_path):
+                if os.path.exists(original_video_path) and original_video_path != cropped_video_path:
                     os.remove(original_video_path)
-                if os.path.exists(compressed_video_path):
+                if os.path.exists(compressed_video_path) and compressed_video_path != cropped_video_path:
                     os.remove(compressed_video_path)
-                video_clip = VideoFileClip(cropped_video_path)
-                video_size = os.path.getsize(cropped_video_path)
                 temp_file_path = cropped_video_path
+
             else:
-                temp_file_path = compressed_video_path if os.path.exists(compressed_video_path) else original_video_path
+                temp_file_path = compressed_video_path if compressed_video_path and os.path.exists(compressed_video_path) else original_video_path
                 if os.path.exists(original_video_path) and original_video_path != temp_file_path:
                     os.remove(original_video_path)
                 elif os.path.exists(compressed_video_path) and compressed_video_path != temp_file_path:
                     os.remove(compressed_video_path)
 
-            if video_size > 50 * 1024 * 1024:
+
+            if os.path.getsize(temp_file_path) > 50 * 1024 * 1024:
                 await update.message.reply_text("Видео слишком большое для видео-сообщения (максимум 50МБ) даже после сжатия.")
                 os.remove(temp_file_path)
                 return SEND_VIDEO_NOTE
 
         except Exception as e:
             logging.error(f"Ошибка при обработке видео: {e}")
-            await update.message.reply_text("Не удалось обработать видео.")
+            await update.message.reply_text("Не удалось обработать видео. Проверьте, установлен ли ffmpeg.")
             if os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
             return SEND_VIDEO_NOTE
 
-        context.user_data['video_path'] = temp_file_path
 
+        context.user_data['video_path'] = temp_file_path
         await update.message.reply_text(
             "Выберите бота, через которого отправить видео-сообщение:",
             reply_markup=select_bot_menu(sending_bots)
