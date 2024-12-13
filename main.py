@@ -613,7 +613,6 @@ async def done_send_post_media(update: Update, context: ContextTypes.DEFAULT_TYP
 
 @allowed_users_only
 async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE, sending_bots):
-
     video = None
     if update.message.video:
         video = update.message.video
@@ -686,7 +685,6 @@ async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await update.message.reply_text("Не удалось обработать видео.")
             os.remove(temp_file_path)
             return SEND_VIDEO_NOTE
-
 
         context.user_data['video_path'] = temp_file_path
 
