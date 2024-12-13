@@ -625,16 +625,15 @@ async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE,
             suffix = '.mp4'
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
                 await file.download_to_drive(temp_file.name)
-                temp_file_path = temp_file.name
+                original_video_path = temp_file.name
         except Exception as e:
             logging.error(f"Ошибка при скачивании видео: {e}")
             await update.message.reply_text("Не удалось загрузить видео. Попробуйте снова.")
             return SEND_VIDEO_NOTE
 
-
         try:
-            video_clip = VideoFileClip(temp_file_path)
-            video_size = os.path.getsize(temp_file_path)
+            video_clip = VideoFileClip(original_video_path)
+            video_size = os.path.getsize(original_video_path)
             video_duration = video_clip.duration
             width, height = video_clip.size
 
@@ -643,47 +642,59 @@ async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE,
             # Максимальная длина: 60 секунд
             # Соотношение сторон: 1:1 (квадратное видео)
 
-            if video_size > 50 * 1024 * 1024:
-                await update.message.reply_text("Видео слишком большое для видео-сообщения (максимум 50МБ).")
-                os.remove(temp_file_path)
-                return SEND_VIDEO_NOTE
+            if video_size > 50 * 1024 * 1024 or video_duration > 60:
+                # Сжатие видео
+                logging.info(f"Видео слишком большое или длинное. Начинаем сжатие. Размер: {video_size} байт, Длительность: {video_duration} сек.")
+                compressed_video_path = original_video_path.replace('.mp4', '_compressed.mp4')
+                try:
+                    video_clip.resize(height=min(width, height)).set_duration(min(video_duration, 60)).write_videofile(compressed_video_path, codec='libx264', audio_codec='aac', fps=24) # fps = frames per second
+                    os.remove(original_video_path)
+                    video_clip = VideoFileClip(compressed_video_path)
+                    video_size = os.path.getsize(compressed_video_path)
+                    video_duration = video_clip.duration
+                    width, height = video_clip.size
+                    logging.info(f"Видео успешно сжато. Новый размер: {video_size} байт, Новая длительность: {video_duration} сек.")
 
-            if video_duration > 60:
-                await update.message.reply_text("Видео слишком длинное для видео-сообщения (максимум 60 секунд).")
-                os.remove(temp_file_path)
-                return SEND_VIDEO_NOTE
+                except Exception as e:
+                    logging.error(f"Ошибка при сжатии видео: {e}")
+                    await update.message.reply_text("Не удалось сжать видео.")
+                    os.remove(original_video_path)
+                    return SEND_VIDEO_NOTE
+
 
             # Проверка соотношения сторон (1:1)
             if abs(width - height) > 10:  # Допустимая погрешность
                 await update.message.reply_text("Видео не соответствует формату 1:1 (квадратное видео).")
                 await update.message.reply_text("Бот автоматически приведёт видео к формату 1:1.")
-                
 
                 new_size = min(width, height)
                 cropped_video = video_clip.crop(x_center=width/2, y_center=height/2, width=new_size, height=new_size)
-                resized_video = cropped_video.resize((640, 640))
+                cropped_video_path = original_video_path.replace('.mp4', '_cropped.mp4')
+                cropped_video.write_videofile(cropped_video_path, codec='libx264', audio_codec='aac', fps=24)
+                if os.path.exists(original_video_path):
+                    os.remove(original_video_path)
+                if os.path.exists(compressed_video_path):
+                    os.remove(compressed_video_path)
+                video_clip = VideoFileClip(cropped_video_path)
+                video_size = os.path.getsize(cropped_video_path)
+                temp_file_path = cropped_video_path
+            else:
+                temp_file_path = compressed_video_path if os.path.exists(compressed_video_path) else original_video_path
+                if os.path.exists(original_video_path) and original_video_path != temp_file_path:
+                    os.remove(original_video_path)
+                elif os.path.exists(compressed_video_path) and compressed_video_path != temp_file_path:
+                    os.remove(compressed_video_path)
 
-                # Сохраняем изменённое видео
-                processed_temp_path = temp_file_path.replace('.mp4', '_processed.mp4')
-                resized_video.write_videofile(processed_temp_path, codec='libx264', audio_codec='aac')
-
+            if video_size > 50 * 1024 * 1024:
+                await update.message.reply_text("Видео слишком большое для видео-сообщения (максимум 50МБ) даже после сжатия.")
                 os.remove(temp_file_path)
-                temp_file_path = processed_temp_path
-
-
-                video_clip = VideoFileClip(temp_file_path)
-                width, height = video_clip.size
-
-
-                if os.path.getsize(temp_file_path) > 50 * 1024 * 1024:
-                    await update.message.reply_text("Видео после обработки превышает ограничение в 50МБ.")
-                    os.remove(temp_file_path)
-                    return SEND_VIDEO_NOTE
+                return SEND_VIDEO_NOTE
 
         except Exception as e:
             logging.error(f"Ошибка при обработке видео: {e}")
             await update.message.reply_text("Не удалось обработать видео.")
-            os.remove(temp_file_path)
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
             return SEND_VIDEO_NOTE
 
         context.user_data['video_path'] = temp_file_path
@@ -696,6 +707,7 @@ async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE,
     else:
         await update.message.reply_text("Пожалуйста, отправьте видео или видеофайл.")
         return SEND_VIDEO_NOTE
+
 
 @allowed_users_only
 async def receive_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, sending_bots):
