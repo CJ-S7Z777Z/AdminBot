@@ -631,26 +631,38 @@ async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE,
             width, height = video_clip.size
             video_duration = video_clip.duration
 
-            # Сжатие видео до параметров видео-сообщения
-            target_size = min(width, height)  # Размер для квадратного видео
-            target_duration = min(video_duration, 60) # ограничение длительности в 60 секунд
+            # Ограничения Telegram для video_note (строгие)
+            MAX_SIZE = 50 * 1024 * 1024  # 50 MB
+            MAX_DURATION = 60  # 60 seconds
+            MAX_DIMENSION = 640  # Maximum dimension 640x640
 
-            compressed_video_path = original_video_path.replace('.mp4', '_compressed.mp4')
+            # Вычисление нового размера, сохраняя соотношение сторон
+            target_size = min(width, height)
+            if target_size > MAX_DIMENSION:
+                target_size = MAX_DIMENSION
+            new_width = int(width * (target_size / height))
+            new_height = target_size
+
+            # Обрезка и сжатие видео
+            processed_video_path = original_video_path.replace('.mp4', '_processed.mp4')
             try:
-                video_clip.resize(height=target_size).set_duration(target_duration).write_videofile(compressed_video_path, codec='libx264', audio_codec='aac', fps=24)
-                os.remove(original_video_path)
+                video_clip.resize((new_width, new_height)).set_duration(min(video_duration, MAX_DURATION)).write_videofile(processed_video_path, codec='libx264', audio_codec='aac', fps=24)
+                os.remove(original_video_path)  # Удаляем исходный файл
             except Exception as e:
-                logging.error(f"Ошибка при сжатии/обработке видео: {e}")
-                await update.message.reply_text("Не удалось обработать видео. Убедитесь, что ffmpeg установлен и настроен корректно.")
+                logging.error(f"Ошибка при обработке видео: {e}")
+                await update.message.reply_text("Не удалось обработать видео.  Убедитесь, что ffmpeg установлен и настроен корректно.")
                 return SEND_VIDEO_NOTE
 
-            # Проверка размера после сжатия (на всякий случай)
-            if os.path.getsize(compressed_video_path) > 50 * 1024 * 1024:
-                await update.message.reply_text("Видео слишком большое даже после сжатия (максимум 50 МБ).")
-                os.remove(compressed_video_path)
+            # Проверка размера после обработки
+            if os.path.getsize(processed_video_path) > MAX_SIZE:
+                await update.message.reply_text("Видео слишком большое даже после обработки (максимум 50 МБ).")
+                os.remove(processed_video_path)
                 return SEND_VIDEO_NOTE
 
-            context.user_data['video_path'] = compressed_video_path
+            context.user_data['video_path'] = processed_video_path
+            # Сообщение о начале обработки возвращено!
+            await update.message.reply_text("Видео обрабатывается...")
+
 
             await update.message.reply_text(
                 "Выберите бота, через которого отправить видео-сообщение:",
