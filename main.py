@@ -23,7 +23,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters,
     ContextTypes, ConversationHandler
 )
-from moviepy import VideoFileClip, editor
+from moviepy.editor import VideoFileClip
 
 
 load_dotenv()
