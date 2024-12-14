@@ -627,6 +627,86 @@ async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE,
             suffix = '.mp4'
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
                 await file.download_to_drive(temp_file.name)
+                temp_file_path = temp_file.name
+        except Exception as e:
+            logging.error(f"Ошибка при скачивании видео: {e}")
+            await update.message.reply_text("Не удалось загрузить видео. Попробуйте снова.")
+            return SEND_VIDEO_NOTE
+
+
+        try:
+            video_clip = VideoFileClip(temp_file_path)
+            video_size = os.path.getsize(temp_file_path)
+            video_duration = video_clip.duration
+            width, height = video_clip.size
+
+            # Требования Telegram для video_note:
+            # Максимальный размер: 50 МБ
+            # Максимальная длина: 60 секунд
+            # Соотношение сторон: 1:1 (квадратное видео)
+
+            if video_size > 50 * 1024 * 1024:
+                await update.message.reply_text("Видео слишком большое для видео-сообщения (максимум 50МБ).")
+                os.remove(temp_file_path)
+                return SEND_VIDEO_NOTE
+
+            if video_duration > 60:
+                await update.message.reply_text("Видео слишком длинное для видео-сообщения (максимум 60 секунд).")
+                os.remove(temp_file_path)
+                return SEND_VIDEO_NOTE
+
+            # Проверка соотношения сторон (1:1)
+            if abs(width - height) > 10:  # Допустимая погрешность
+                await update.message.reply_text("Видео не соответствует формату 1:1 (квадратное видео).")
+                await update.message.reply_text("Бот автоматически приведёт видео к формату 1:1.")
+                
+
+                new_size = min(width, height)
+                cropped_video = video_clip.crop(x_center=width/2, y_center=height/2, width=new_size, height=new_size)
+                resized_video = cropped_video.resize((640, 640))
+
+                # Сохраняем изменённое видео
+                processed_temp_path = temp_file_path.replace('.mp4', '_processed.mp4')
+                resized_video.write_videofile(processed_temp_path, codec='libx264', audio_codec='aac')
+
+                os.remove(temp_file_path)
+                temp_file_path = processed_temp_path
+
+
+                video_clip = VideoFileClip(temp_file_path)
+                width, height = video_clip.size
+
+
+                if os.path.getsize(temp_file_path) > 50 * 1024 * 1024:
+                    await update.message.reply_text("Видео после обработки превышает ограничение в 50МБ.")
+                    os.remove(temp_file_path)
+                    return SEND_VIDEO_NOTE
+
+        except Exception as e:
+            logging.error(f"Ошибка при обработке видео: {e}")
+            await update.message.reply_text("Не удалось обработать видео.")
+            os.remove(temp_file_path)
+            return SEND_VIDEO_NOTE
+
+
+        context.user_data['video_path'] = temp_file_path
+
+        await update.message.reply_text(
+            "Выберите бота, через которого отправить видео-сообщение:",
+            reply_markup=select_bot_menu(sending_bots)
+        )
+        return SELECT_BOT_VIDEO_AUDIO
+    else:
+        await update.message.reply_text("Пожалуйста, отправьте видео или видеофайл.")
+        return SEND_VIDEO_NOTE
+
+
+    if video:
+        try:
+            file = await video.get_file()
+            suffix = '.mp4'
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                await file.download_to_drive(temp_file.name)
                 original_video_path = temp_file.name
 
             video_clip = VideoFileClip(original_video_path)
