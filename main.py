@@ -623,86 +623,81 @@ async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 @allowed_users_only
 async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE, sending_bots):
-    """Обрабатывает видео, загруженное пользователем, и готовит его для отправки как видео-сообщение."""
+    """Обрабатывает видео или видео-файл, загруженный пользователем, и готовит его для отправки как видео-сообщение."""
 
     video = update.message.video
     video_file = update.message.document if (
         update.message.document and update.message.document.mime_type.startswith('video/')
     ) else None
 
-    if video or (video_file and video_file.file_name.endswith('.mp4')):
+    if video or video_file:
         try:
-            if video:
-                file = await video.get_file()
-            elif video_file:
-                file = await video_file.get_file()
-
+            file = await (video.get_file() if video else video_file.get_file())
             suffix = '.mp4'
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
                 await file.download_to_drive(temp_file.name)
-                original_video_path = temp_file.name
+                temp_file_path = temp_file.name
+        except Exception as e:
+            logging.error(f"Ошибка при скачивании видео: {e}")
+            await update.message.reply_text("Не удалось загрузить видео. Попробуйте снова.")
+            return SEND_VIDEO_NOTE
 
-            video_clip = VideoFileClip(original_video_path)
-            video_size = os.path.getsize(original_video_path)
+        try:
+            video_clip = VideoFileClip(temp_file_path)
+            video_size = os.path.getsize(temp_file_path)
             video_duration = video_clip.duration
             width, height = video_clip.size
 
-            # Ограничения Telegram для video_note
+            # Требования Telegram для video_note:
             MAX_SIZE = 50 * 1024 * 1024  # 50 MB
             MAX_DURATION = 60  # 60 seconds
-            MAX_DIMENSION = 640  # Maximum dimension 640x640
+            TARGET_DIMENSION = 640  # Квадратное видео 640x640
 
-            # Проверка размера и длительности
             if video_size > MAX_SIZE:
-                await update.message.reply_text("Видео слишком большое для видео-сообщения (максимум 50 МБ).")
-                os.remove(original_video_path)
+                await update.message.reply_text("Видео слишком большое для видео-сообщения (максимум 50МБ).")
+                os.remove(temp_file_path)
                 return SEND_VIDEO_NOTE
+
             if video_duration > MAX_DURATION:
                 await update.message.reply_text("Видео слишком длинное для видео-сообщения (максимум 60 секунд).")
-                os.remove(original_video_path)
+                os.remove(temp_file_path)
                 return SEND_VIDEO_NOTE
 
-            # Обрезка и изменение размера, если необходимо
-            if abs(width - height) > 10 or width > MAX_DIMENSION or height > MAX_DIMENSION:  # Допустимая погрешность и проверка на размер
-                await update.message.reply_text("Видео не соответствует формату 1:1 (квадратное видео) или слишком большое. Бот автоматически обработает его.")
+            if abs(width - height) > 10 or (width != TARGET_DIMENSION or height != TARGET_DIMENSION):
+                await update.message.reply_text("Видео не соответствует требуемому формату. Бот автоматически обработает его.")
 
-                target_size = min(width, height)
-                if target_size > MAX_DIMENSION:
-                    target_size = MAX_DIMENSION
-                    new_width = int(width * (target_size / max(height,1))) # защита от деления на ноль
-                new_height = target_size
+                new_size = min(width, height)
+                cropped_video = video_clip.crop(x_center=width/2, y_center=height/2, width=new_size, height=new_size)
+                resized_video = cropped_video.resize((TARGET_DIMENSION, TARGET_DIMENSION))
+                resized_video.set_duration(min(video_duration, MAX_DURATION))
 
-                cropped_video = video_clip.crop(x_center=width/2, y_center=height/2, width=new_width, height=new_height)
-                resized_video = cropped_video.resize((target_size, target_size))
-                resized_video = resized_video.set_duration(min(video_duration, MAX_DURATION))
+                processed_temp_path = temp_file_path.replace('.mp4', '_processed.mp4')
+                resized_video.write_videofile(processed_temp_path, codec='libx264', audio_codec='aac')
+                
+                os.remove(temp_file_path)
+                temp_file_path = processed_temp_path
 
+                video_clip = VideoFileClip(temp_file_path)
+                width, height = video_clip.size
 
-                processed_video_path = original_video_path.replace('.mp4', '_processed.mp4')
-                resized_video.write_videofile(processed_video_path, codec='libx264', audio_codec='aac', fps=24)
-                os.remove(original_video_path)
-                original_video_path = processed_video_path
-                video_size = os.path.getsize(original_video_path)
-
-                if video_size > MAX_SIZE:
+                if os.path.getsize(temp_file_path) > MAX_SIZE:
                     await update.message.reply_text("Видео после обработки превышает ограничение в 50МБ.")
-                    os.remove(original_video_path)
+                    os.remove(temp_file_path)
                     return SEND_VIDEO_NOTE
-
-            context.user_data['video_path'] = original_video_path
-            await update.message.reply_text("Видео готово к отправке.")
-            await update.message.reply_text(
-                "Выберите бота, через которого отправить видео-сообщение:",
-                reply_markup=select_bot_menu(sending_bots)
-            )
-            return SELECT_BOT_VIDEO_AUDIO
 
         except Exception as e:
             logging.error(f"Ошибка при обработке видео: {e}")
-            await update.message.reply_text("Не удалось обработать видео. Убедитесь, что ffmpeg установлен и настроен корректно.")
-            if os.path.exists(original_video_path):
-                os.remove(original_video_path)
+            await update.message.reply_text("Не удалось обработать видео.")
+            os.remove(temp_file_path)
             return SEND_VIDEO_NOTE
 
+        context.user_data['video_path'] = temp_file_path
+        await update.message.reply_text("Видео готово к отправке.")
+        await update.message.reply_text(
+            "Выберите бота, через которого отправить видео-сообщение:",
+            reply_markup=select_bot_menu(sending_bots)
+        )
+        return SELECT_BOT_VIDEO_AUDIO
     else:
         await update.message.reply_text("Пожалуйста, отправьте видео или видеофайл.")
         return SEND_VIDEO_NOTE
