@@ -1,7 +1,7 @@
+
 import logging
 import os
 import tempfile
-import sqlite3
 import json
 import uuid
 import re
@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 import redis
 import asyncio
 from PIL import Image
-
 
 if not hasattr(Image, 'ANTIALIAS'):
     Image.ANTIALIAS = Image.Resampling.LANCZOS
@@ -25,16 +24,13 @@ from telegram.ext import (
 )
 from moviepy.editor import VideoFileClip
 
-
 load_dotenv()
-
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
 
 (
     ADMIN_PANEL,
@@ -61,7 +57,6 @@ logger = logging.getLogger(__name__)
     SELECT_BOT              
 ) = range(22)
 
-
 ADMIN_BOT_TOKEN = os.getenv('ADMIN_BOT_TOKEN')
 ALLOWED_USER_IDS = os.getenv('ALLOWED_USER_IDS', '')
 ALLOWED_USER_IDS = [int(uid.strip()) for uid in ALLOWED_USER_IDS.split(',') if uid.strip().isdigit()]
@@ -76,9 +71,7 @@ class SendingBotManager:
         self.redis_password = config['REDIS_PASSWORD']
         self.redis_db = int(config['REDIS_DB'])
         self.chat_id_set = config['CHAT_ID_COLUMN']
-        self.db_path = config['DB_PATH']
         self.bot_name = self.name 
-
 
         self.redis_client = redis.Redis(
             host=self.redis_host,
@@ -89,95 +82,42 @@ class SendingBotManager:
             decode_responses=True
         )
 
-
         self.bot = Bot(token=self.bot_token)
 
-
-        self.init_db()
-
-    def init_db(self):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS posts (
-                post_id TEXT PRIMARY KEY,
-                content TEXT,
-                post_type TEXT,
-                data TEXT,
-                bot_name TEXT
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS sent_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                post_id TEXT,
-                chat_id INTEGER,
-                message_id INTEGER,
-                bot_name TEXT
-            )
-        ''')
-        conn.commit()
-        conn.close()
-
     def save_post(self, post_id, content, post_type, data, bot_name):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT OR REPLACE INTO posts (post_id, content, post_type, data, bot_name) 
-            VALUES (?, ?, ?, ?, ?)
-        ''', (post_id, content, post_type, data, bot_name))
-        conn.commit()
-        conn.close()
+        key = f"bot:{bot_name}:post:{post_id}"
+        self.redis_client.hset(key, mapping={
+            'content': content,
+            'post_type': post_type,
+            'data': data,
+            'bot_name': bot_name
+        })
 
     def get_post(self, post_id, bot_name):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT content, post_type, data FROM posts 
-            WHERE post_id=? AND bot_name=?
-        ''', (post_id, bot_name))
-        result = cursor.fetchone()
-        conn.close()
-        return result
+        key = f"bot:{bot_name}:post:{post_id}"
+        post = self.redis_client.hgetall(key)
+        if post:
+            return post
+        return None
 
     def delete_post(self, post_id, bot_name):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            DELETE FROM posts WHERE post_id=? AND bot_name=?
-        ''', (post_id, bot_name))
-        conn.commit()
-        conn.close()
+        key = f"bot:{bot_name}:post:{post_id}"
+        self.redis_client.delete(key)
 
     def add_sent_message(self, post_id, chat_id, message_id, bot_name):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO sent_messages (post_id, chat_id, message_id, bot_name) 
-            VALUES (?, ?, ?, ?)
-        ''', (post_id, chat_id, message_id, bot_name))
-        conn.commit()
-        conn.close()
+        key = f"bot:{bot_name}:post:{post_id}:messages"
+        self.redis_client.hset(key, chat_id, message_id)
 
     def get_sent_messages(self, post_id, bot_name):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT chat_id, message_id FROM sent_messages 
-            WHERE post_id=? AND bot_name=?
-        ''', (post_id, bot_name))
-        results = cursor.fetchall()
-        conn.close()
-        return results
+        key = f"bot:{bot_name}:post:{post_id}:messages"
+        messages = self.redis_client.hgetall(key)
+        if messages:
+            return messages
+        return {}
 
     def delete_sent_messages(self, post_id, bot_name):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            DELETE FROM sent_messages WHERE post_id=? AND bot_name=?
-        ''', (post_id, bot_name))
-        conn.commit()
-        conn.close()
+        key = f"bot:{bot_name}:post:{post_id}:messages"
+        self.redis_client.delete(key)
 
     async def send_text_message(self, chat_id, text):
         try:
@@ -613,16 +553,6 @@ async def done_send_post_media(update: Update, context: ContextTypes.DEFAULT_TYP
 
 @allowed_users_only
 async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE, sending_bots):
-    """Обрабатывает видео, загруженное пользователем, и готовит его для отправки как видео-сообщение."""
-
-    video = None
-    if update.message.video:
-        video = update.message.video
-    elif update.message.document and update.message.document.mime_type.startswith('video/'):
-        video = update.message.document
-
-@allowed_users_only
-async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE, sending_bots):
     """Обрабатывает видео или видео-файл, загруженный пользователем, и готовит его для отправки как видео-сообщение."""
 
     video = update.message.video
@@ -702,7 +632,6 @@ async def receive_video_note(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await update.message.reply_text("Пожалуйста, отправьте видео или видеофайл.")
         return SEND_VIDEO_NOTE
 
-
 @allowed_users_only
 async def receive_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, sending_bots):
     if update.message.voice:
@@ -756,11 +685,12 @@ async def select_post_action(update: Update, context: ContextTypes.DEFAULT_TYPE,
             post_data = bot_manager.get_post(post_id, bot_manager.bot_name)
             if not post_data:
                 continue
-            _, post_type, data = post_data
+            post_type = post_data.get('post_type')
+            data = post_data.get('data')
             sent_msgs = bot_manager.get_sent_messages(post_id, bot_manager.bot_name)
-            for chat_id, message_id in sent_msgs:
+            for chat_id, message_id in sent_msgs.items():
                 try:
-                    await bot_manager.bot.delete_message(chat_id=chat_id, message_id=message_id)
+                    await bot_manager.bot.delete_message(chat_id=chat_id, message_id=int(message_id))
                     total_deleted += 1
                 except Exception as e:
                     logging.error(f"Ошибка при удалении сообщения у пользователя {chat_id} через {bot_manager.bot_name}: {e}")
@@ -785,16 +715,17 @@ async def edit_post_text(update: Update, context: ContextTypes.DEFAULT_TYPE, sen
         post_data = bot_manager.get_post(post_id, bot_manager.bot_name)
         if not post_data:
             continue
-        _, post_type, data = post_data
+        post_type = post_data.get('post_type')
+        data = post_data.get('data')
         bot_manager.save_post(post_id, new_text, post_type, data, bot_manager.bot_name)
         sent_msgs = bot_manager.get_sent_messages(post_id, bot_manager.bot_name)
         escaped_text = escape_markdown_v2(new_text, preserve_markdown=True)
-        for chat_id, message_id in sent_msgs:
+        for chat_id, message_id in sent_msgs.items():
             try:
                 if post_type == 'text':
-                    await bot_manager.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=escaped_text, parse_mode='MarkdownV2')
+                    await bot_manager.bot.edit_message_text(chat_id=chat_id, message_id=int(message_id), text=escaped_text, parse_mode='MarkdownV2')
                 elif post_type == 'text_media':
-                    await bot_manager.bot.edit_message_caption(chat_id=chat_id, message_id=message_id, caption=escaped_text, parse_mode='MarkdownV2')
+                    await bot_manager.bot.edit_message_caption(chat_id=chat_id, message_id=int(message_id), caption=escaped_text, parse_mode='MarkdownV2')
 
             except Exception as e:
                 logging.error(f"Ошибка при редактировании сообщения у пользователя {chat_id} через {bot_manager.bot_name}: {e}")
@@ -997,7 +928,6 @@ def main():
             'REDIS_PASSWORD': os.getenv('CAPTAIN_REDIS_PASSWORD'),
             'REDIS_DB': os.getenv('CAPTAIN_REDIS_DB'),
             'CHAT_ID_COLUMN': os.getenv('CAPTAIN_CHAT_ID_COLUMN'),
-            'DB_PATH': os.getenv('CAPTAIN_DB_PATH'),
             'name': 'Captain'
         },
         {
@@ -1008,7 +938,6 @@ def main():
             'REDIS_PASSWORD': os.getenv('WEST_REDIS_PASSWORD'),
             'REDIS_DB': os.getenv('WEST_REDIS_DB'),
             'CHAT_ID_COLUMN': os.getenv('WEST_CHAT_ID_COLUMN'),
-            'DB_PATH': os.getenv('WEST_DB_PATH'),
             'name': 'West'
         }
     ]
@@ -1017,7 +946,7 @@ def main():
     for config in sending_bots_configs:
         if not all([config.get('BOT_TOKEN'), config.get('REDIS_HOST'), config.get('REDIS_PORT'),
                     config.get('REDIS_USERNAME'), config.get('REDIS_PASSWORD'),
-                    config.get('REDIS_DB'), config.get('CHAT_ID_COLUMN'), config.get('DB_PATH')]):
+                    config.get('REDIS_DB'), config.get('CHAT_ID_COLUMN')]):
             logger.warning(f"Недостаточно конфигурации для бота {config.get('name', 'Unknown')}. Пропуск.")
             continue
         sending_bots.append(SendingBotManager(config['name'], config))
